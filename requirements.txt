@@ -1,0 +1,10 @@
+torch==2.5.1
+transformers==4.50.0
+accelerate==1.5.2
+numpy==1.26.4
+scikit-learn==1.6.1
+sentencepiece==0.2.0
+tokenizers==0.21.1
+datasets==3.4.1
+pyarrow==19.0.1
+ijson==3.3.0

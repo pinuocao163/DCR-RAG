@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dcrrag"
+description = "DCR-RAG: Draft-Conditioned Ranking with Conservative Passage Replacement"
+version = "1.0.0"
+readme = "README.md"
+requires-python = ">=3.9"
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+vllm = ["vllm==0.7.3"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+include = ["birrag*"]
+

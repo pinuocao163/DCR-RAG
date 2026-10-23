@@ -1,0 +1,145 @@
+{
+  "seed": 2094,
+  "split_seed": 2091,
+  "device": "cuda:0",
+  "scorer_train_questions": 100,
+  "gain_train_questions": 100,
+  "dev_questions": 100,
+  "scoring_batch_size": 8,
+  "bootstrap_samples": 10000,
+  "models": {
+    "bge": "models/bge-reranker-base",
+    "reference": "models/Qwen2.5-3B-Instruct",
+    "reader": "models/Qwen2.5-7B-Instruct"
+  },
+  "tokenization": {
+    "query_cap": 200,
+    "document_cap": 464,
+    "joint_cap": 512
+  },
+  "training": {
+    "learning_rate": 1e-06,
+    "epochs": 3,
+    "gradient_accumulation": 4,
+    "warmup_ratio": 0.1,
+    "weight_decay": 0.01,
+    "fp16": true,
+    "gradient_checkpointing": true,
+    "max_grad_norm": 1.0
+  },
+  "generation": {
+    "backend": "hf",
+    "dtype": "bfloat16",
+    "draft_input_cap": 4072,
+    "draft_output_cap": 24,
+    "reader_input_cap": 2048,
+    "reader_output_cap": 32,
+    "gpu_memory_utilization": 0.45,
+    "reader_backend": "hf"
+  },
+  "selector": {
+    "folds": 5,
+    "ridge_alpha": 10.0,
+    "replacements_per_position": 4,
+    "kappa_grid": [
+      0.0,
+      0.25,
+      0.5,
+      1.0,
+      2.0
+    ],
+    "tau_grid": [
+      0.0,
+      0.005,
+      0.01,
+      0.02,
+      0.05,
+      0.1
+    ],
+    "formulation": "direct"
+  },
+  "datasets": {
+    "hotpotqa": {
+      "train_sources": [
+        "data/hotpotqa/hotpot_dev_distractor_v1.json"
+      ],
+      "eval_sources": [
+        "data/hotpotqa/hotpot_dev_distractor_v1.json"
+      ],
+      "pool_cap": 10,
+      "test_questions": 1000,
+      "confirmation_questions": 1000,
+      "auxiliary": "none"
+    },
+    "2wiki": {
+      "train_sources": [
+        "data/2wiki/train.json"
+      ],
+      "eval_sources": [
+        "data/2wiki/dev.json"
+      ],
+      "pool_cap": 10,
+      "test_questions": 1000,
+      "confirmation_questions": 1000,
+      "auxiliary": "none"
+    },
+    "musique": {
+      "train_sources": [
+        "data/musique/musique_ans_v1.0_train.jsonl"
+      ],
+      "eval_sources": [
+        "data/musique/musique_ans_v1.0_dev.jsonl"
+      ],
+      "pool_cap": 20,
+      "test_questions": 500,
+      "confirmation_questions": 0,
+      "auxiliary": "none",
+      "test_hop_counts": {
+        "2": 24,
+        "3": 324,
+        "4": 152
+      }
+    },
+    "naturalqa": {
+      "train_sources": [
+        "data/naturalqa/train_1w.json"
+      ],
+      "eval_sources": [
+        "data/naturalqa/dev.json"
+      ],
+      "pool_cap": 10,
+      "test_questions": 1000,
+      "confirmation_questions": 0,
+      "auxiliary": "none"
+    },
+    "triviaqa": {
+      "train_sources": [
+        "data/triviaqa/train_1w.json"
+      ],
+      "eval_sources": [
+        "data/triviaqa/dev.json"
+      ],
+      "pool_cap": 10,
+      "test_questions": 1000,
+      "confirmation_questions": 0,
+      "auxiliary": "none"
+    }
+  },
+  "bootstrap_seed": 2092,
+  "controls": {
+    "heuristic_grid": [
+      0,
+      0.25,
+      0.5,
+      0.75,
+      1
+    ],
+    "acceptance_targets": [
+      0.2,
+      0.25,
+      0.317,
+      0.4,
+      0.5
+    ]
+  }
+}
