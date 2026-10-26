@@ -1,0 +1,32 @@
+{
+  "Qwen2.5-1.5B-Instruct": {
+    "model": "models/Qwen2.5-1.5B-Instruct",
+    "backend": "hf"
+  },
+  "Qwen2.5-3B-Instruct": {
+    "model": "models/Qwen2.5-3B-Instruct",
+    "backend": "hf"
+  },
+  "Qwen2.5-7B-Instruct": {
+    "model": "models/Qwen2.5-7B-Instruct",
+    "backend": "hf"
+  },
+  "Qwen2.5-14B-Instruct": {
+    "model": "models/Qwen2.5-14B-Instruct",
+    "backend": "hf",
+    "device_map": "auto"
+  },
+  "Llama-3.1-8B-Instruct": {
+    "model": "models/Llama-3.1-8B-Instruct",
+    "backend": "hf"
+  },
+  "Mistral-7B-Instruct-v0.3": {
+    "model": "models/Mistral-7B-Instruct-v0.3",
+    "backend": "hf"
+  },
+  "internlm3-8b-instruct": {
+    "model": "models/internlm3-8b-instruct",
+    "backend": "hf",
+    "trust_remote_code": true
+  }
+}

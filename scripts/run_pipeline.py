@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -10,6 +11,7 @@ from birrag.config import load_config
 from birrag.data import assert_disjoint
 from birrag.io import digest, load_rows, output_path, save_json, save_rows
 from birrag.features import draft_match_diagnostics
+from birrag.gain import tune_shared_gate
 from birrag.support import route_support_diagnostics
 
 
@@ -102,6 +104,7 @@ def main():
     parser.add_argument("--seed", type=int)
     parser.add_argument("--split-dir")
     parser.add_argument("--label-test-proposals", action="store_true")
+    parser.add_argument("--shared-gate")
     args = parser.parse_args()
     root = output_path(args.output_root)
     root.mkdir(parents=True, exist_ok=True)
@@ -171,7 +174,57 @@ def main():
             )
         bundle, gate = target / "gain_ensemble.json", target / "gate.json"
         run("fit-gain", config_path, bundle, input=target / "gain_train.gains.jsonl")
-        run("tune", config_path, gate, input=target / "dev.gains.jsonl", bundle=bundle)
+    if args.shared_gate:
+        shared = json.loads(Path(args.shared_gate).read_text())
+        if "best" not in shared:
+            raise ValueError("The supplied shared gate must contain best parameters")
+    elif len(datasets) == len(config["datasets"]):
+        shared = tune_shared_gate(
+            {
+                dataset: load_rows(root / dataset / "dev.gains.jsonl")
+                for dataset in datasets
+            },
+            {
+                dataset: json.loads((root / dataset / "gain_ensemble.json").read_text())
+                for dataset in datasets
+            },
+            config,
+        )
+    else:
+        shared = {
+            "best": dict(config["selector"]["paper_gate"]),
+            "scope": "published_fixed",
+            "selection_source": "paper",
+            "test_used": False,
+        }
+    save_json(root / "shared_gate.json", shared)
+    for dataset in datasets:
+        target = root / dataset
+        checkpoint, bundle, gate = (
+            target / "scorer",
+            target / "gain_ensemble.json",
+            target / "gate.json",
+        )
+        save_json(
+            gate,
+            {
+                **shared,
+                "dataset": dataset,
+                "shared_gate_sha256": digest(root / "shared_gate.json"),
+                "bundle_sha256": digest(bundle),
+            },
+        )
+        split_dir = (
+            Path(args.split_dir).resolve() if args.split_dir else target / "splits"
+        )
+        if args.split_dir and args.dataset == "all":
+            split_dir = split_dir / dataset
+        confirmation_count = config["datasets"][dataset].get(
+            "confirmation_questions", 0
+        )
+        confirmation = (
+            load_rows(split_dir / "confirmation.jsonl") if confirmation_count else []
+        )
         frozen = artifact_checksums(checkpoint, bundle, gate)
         save_json(target / "frozen_model_manifest.json", frozen)
         routes = evaluate_routes(config_path, target, "test", bundle, gate)

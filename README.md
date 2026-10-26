@@ -37,7 +37,7 @@ Run all five datasets:
 python scripts/run_pipeline.py --config configs/paper.json --dataset all --output-root runs/paper_seed2094 --label-test-proposals
 ```
 
-Use `--dataset hotpotqa` to run one dataset. The pipeline prepares disjoint splits, fixes BGE candidate order, generates drafts, constructs teacher preferences, trains the scorer, labels gains, fits Ridge models, selects acceptance parameters on development data, and evaluates the test routes. HotpotQA and 2Wiki confirmation sets reuse the trained artifacts and development-selected parameters.
+Use `--dataset hotpotqa` to run one dataset with the published fixed gate (`kappa=1`, `tau=0.04`), or supply `--shared-gate runs/paper_seed2094/shared_gate.json` from a completed joint development search. The pipeline prepares disjoint splits, fixes BGE candidate order, generates drafts, constructs teacher preferences, trains the scorer, labels gains, fits dataset-specific Ridge models, then selects one shared gate by development macro F1 before test evaluation. HotpotQA and 2Wiki confirmation sets reuse the trained artifacts and development-selected parameters.
 
 | Setting | Value |
 |---|---|
@@ -52,6 +52,8 @@ Use `--dataset hotpotqa` to run one dataset. The pipeline prepares disjoint spli
 | Gain predictors | 5 question folds, Ridge `alpha=10` |
 | Replacement search | 4 alternatives per position, at most 8 proposals |
 | Main / split / bootstrap seeds | 2094 / 2091 / 2092 |
+| Gain-fold salt across training seeds | 2094 |
+| Published shared acceptance parameters | `kappa=1`, `tau=0.04` |
 | Bootstrap replicates | 10,000 |
 
 Run stability seeds with the same split seed:
@@ -61,7 +63,7 @@ python scripts/run_pipeline.py --config configs/paper.json --dataset all --seed 
 python scripts/run_pipeline.py --config configs/paper.json --dataset all --seed 2096 --output-root runs/paper_seed2096 --label-test-proposals
 ```
 
-Each run saves `resolved_config.json`, aggregate route predictions, EM/F1 summaries, and paired bootstrap intervals. Dataset subdirectories contain split manifests, scorer checkpoints, `gain_ensemble.json`, `gate.json`, predictions, support statistics, and proposal diagnostics. Main-test and confirmation results are reported separately.
+Each run saves `resolved_config.json`, `shared_gate.json`, aggregate route predictions, EM/F1 summaries, and paired bootstrap intervals. Dataset subdirectories contain split manifests, scorer checkpoints, `gain_ensemble.json`, `gate.json`, predictions, support statistics, and proposal diagnostics. Main-test and confirmation results are reported separately.
 
 Evaluate saved predictions:
 
@@ -80,13 +82,29 @@ python scripts/compare_acceptance.py --run-root runs/paper_seed2094 --output-roo
 python scripts/compare_budgets.py --run-root runs/paper_seed2094 --dataset musique --output-root runs/budgets
 ```
 
-These scripts evaluate gain formulations, fixed-scorer heuristic policies, development-matched acceptance, and 1–4 passage budgets. Results include metrics, paired intervals, and artifact checksums. Configuration and statistical definitions are documented in [docs/METHOD.md](docs/METHOD.md).
+These scripts evaluate gain formulations, fixed-scorer heuristic policies, development-matched acceptance, and 1–4 passage budgets. Gain-formulation controls repeat the shared development search for each formulation. Results include metrics, paired intervals, and artifact checksums. Configuration and statistical definitions are documented in [docs/METHOD.md](docs/METHOD.md).
 
 For seed-averaged paired comparisons, supply one prediction file per arm and seed:
 
 ```bash
 python scripts/compare_seeds.py --first runs/paper_seed2094/test.conditional.predictions.jsonl runs/paper_seed2095/test.conditional.predictions.jsonl runs/paper_seed2096/test.conditional.predictions.jsonl --second runs/paper_seed2094/test.independent.predictions.jsonl runs/paper_seed2095/test.independent.predictions.jsonl runs/paper_seed2096/test.independent.predictions.jsonl --seed-ids 2094 2095 2096 --output runs/seed_comparison.json
 ```
+
+To include the MLP gain control, supply its architecture and optimization settings as JSON:
+
+```bash
+python scripts/compare_formulations.py --run-root runs/paper_seed2094 --output-root runs/formulations_mlp --formulations direct mlp --mlp-config data/mlp_config.json
+```
+
+The MLP configuration requires `hidden_layer_sizes`, `activation`, `solver`, `alpha`, `learning_rate_init`, and `max_iter`. Each of five question folds fits its own standardizer and network; saved JSON contains the layers and biases used at inference.
+
+For fixed-selector transfer to the seven readers listed in `configs/readers.json`, place the local snapshots at those paths and run:
+
+```bash
+python scripts/compare_readers.py --run-roots runs/paper_seed2094 --readers-config configs/readers.json --output-root runs/reader_transfer
+```
+
+The script reuses each seed's independent and conditional passage selections. Reader configuration supports `device_map` and locally provided custom model code through `trust_remote_code`. It reports reader F1 gains and beneficial/unchanged/harmful outcomes on the same accepted swaps. Multiple `--run-roots` produce seed-averaged and joint question–seed intervals. Use `compare_seeds.py --resampling joint` for joint intervals on other paired predictions.
 
 ## Inference
 

@@ -195,3 +195,59 @@ def seed_averaged_paired_bootstrap(first_runs, second_runs, seed=2092, samples=1
         }
     )
     return result
+
+
+def joint_paired_bootstrap(first_runs, second_runs, seed=2092, samples=10000):
+    validation = seed_averaged_paired_bootstrap(first_runs, second_runs, seed, 1)
+    if samples < 1:
+        raise ValueError("A positive bootstrap sample count is required")
+    grouped = {}
+    for run_index, (first, second) in enumerate(zip(first_runs, second_runs)):
+        other = {(row["dataset"], str(row["id"])): row for row in second}
+        for row in first:
+            key = row["dataset"], str(row["id"])
+            values = [
+                (
+                    answer_metrics(item.get("prediction", ""), item["answers"], key[0])[
+                        "f1"
+                    ]
+                    if not item.get("generation_error")
+                    else 0.0
+                )
+                for item in (row, other[key])
+            ]
+            grouped.setdefault(key[0], {}).setdefault(key[1], [0.0] * len(first_runs))[
+                run_index
+            ] = (values[0] - values[1])
+    matrices = {
+        dataset: np.asarray(list(values.values())).T
+        for dataset, values in grouped.items()
+    }
+    rng = np.random.default_rng(seed)
+    distributions = {dataset: [] for dataset in matrices}
+    for _ in range(samples):
+        seeds = rng.integers(0, len(first_runs), size=len(first_runs))
+        for dataset, values in matrices.items():
+            questions = rng.integers(0, values.shape[1], size=values.shape[1])
+            distributions[dataset].append(
+                float(values[np.ix_(seeds, questions)].mean()) * 100
+            )
+    macro = np.mean(list(distributions.values()), axis=0)
+    return {
+        "per_dataset": {
+            dataset: {
+                "difference": float(matrices[dataset].mean() * 100),
+                "ci95": np.quantile(values, [0.025, 0.975]).tolist(),
+            }
+            for dataset, values in distributions.items()
+        },
+        "macro_difference": float(
+            np.mean([values.mean() for values in matrices.values()]) * 100
+        ),
+        "macro_ci95": np.quantile(macro, [0.025, 0.975]).tolist(),
+        "bootstrap_samples": samples,
+        "seed_runs": len(first_runs),
+        "unique_questions": validation["unique_questions"],
+        "resampling_unit": "paired training seeds and questions; common seed draws across datasets",
+        "macro_weighting": "equal dataset weight within every replicate",
+    }

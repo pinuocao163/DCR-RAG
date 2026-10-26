@@ -44,7 +44,11 @@ def generator(config, role, device=None, for_scoring=False):
     if not for_scoring and backend == "vllm":
         return VLLMGenerator(path, {"seed": config["seed"], **config["generation"]})
     return CausalGenerator(
-        path, device or config["device"], config["generation"]["dtype"]
+        path,
+        device or config["device"],
+        config["generation"]["dtype"],
+        trust_remote_code=config["generation"].get(f"{role}_trust_remote_code", False),
+        device_map=config["generation"].get(f"{role}_device_map"),
     )
 
 

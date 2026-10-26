@@ -5,7 +5,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from birrag.io import digest, load_rows, save_json
-from birrag.metrics import seed_averaged_paired_bootstrap
+from birrag.metrics import seed_averaged_paired_bootstrap, joint_paired_bootstrap
 
 
 def main():
@@ -16,6 +16,9 @@ def main():
     parser.add_argument("--bootstrap-seed", type=int, default=2092)
     parser.add_argument("--bootstrap-samples", type=int, default=10000)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--resampling", choices=("seed_average", "joint"), default="seed_average"
+    )
     args = parser.parse_args()
     if len(args.first) != len(args.second):
         raise ValueError("Provide one prediction file per route for each paired seed")
@@ -27,9 +30,12 @@ def main():
     first, second = [load_rows(path) for path in args.first], [
         load_rows(path) for path in args.second
     ]
-    result = seed_averaged_paired_bootstrap(
-        first, second, args.bootstrap_seed, args.bootstrap_samples
+    compare = (
+        joint_paired_bootstrap
+        if args.resampling == "joint"
+        else seed_averaged_paired_bootstrap
     )
+    result = compare(first, second, args.bootstrap_seed, args.bootstrap_samples)
     result["input_pairs"] = [
         {
             "seed_id": args.seed_ids[index] if args.seed_ids else index,

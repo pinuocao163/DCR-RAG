@@ -14,6 +14,7 @@ FILES = (
     "requirements-vllm.txt",
     "configs/paper.json",
     "configs/paper_hf.json",
+    "configs/readers.json",
     "docs/DATA.md",
     "docs/METHOD.md",
 )
@@ -25,6 +26,7 @@ SCRIPTS = (
     "compare_acceptance.py",
     "compare_seeds.py",
     "compare_budgets.py",
+    "compare_readers.py",
     "package_submission.py",
 )
 

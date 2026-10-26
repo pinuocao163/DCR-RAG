@@ -27,20 +27,37 @@ def model_dtype(device, dtype):
 
 
 class CausalGenerator:
-    def __init__(self, path, device="cuda:0", dtype="bfloat16", system=SYSTEM):
+    def __init__(
+        self,
+        path,
+        device="cuda:0",
+        dtype="bfloat16",
+        system=SYSTEM,
+        trust_remote_code=False,
+        device_map=None,
+    ):
         self.device = torch.device(device)
         self.system = system
-        self.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            path, local_files_only=True, trust_remote_code=trust_remote_code
+        )
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.truncation_side = "right"
         self.tokenizer.padding_side = "left"
+        placement = {} if device_map is None else {"device_map": device_map}
         self.model = AutoModelForCausalLM.from_pretrained(
             path,
             torch_dtype=model_dtype(device, dtype),
             local_files_only=True,
             attn_implementation="sdpa",
-        ).to(self.device)
+            trust_remote_code=trust_remote_code,
+            **placement,
+        )
+        if device_map is None:
+            self.model.to(self.device)
+        else:
+            self.device = self.model.get_input_embeddings().weight.device
         self.model.eval()
         self.model.requires_grad_(False)
 

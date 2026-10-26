@@ -2,6 +2,7 @@ import hashlib
 
 import numpy as np
 from sklearn.linear_model import Ridge
+from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 
 from .data import assert_disjoint, question_key
@@ -17,6 +18,7 @@ FORMULATIONS = (
     "shared_absolute",
     "single_ridge",
     "zero",
+    "mlp",
 )
 
 
@@ -117,7 +119,12 @@ def fit_gain_ensemble(rows, config):
     if any(row.get("feature_names") != names for row in rows):
         raise ValueError("Inconsistent feature schema")
     assignment = {
-        str(row["id"]): fold_index(config["seed"], dataset, row["id"], folds)
+        str(row["id"]): fold_index(
+            config["selector"].get("fold_seed", config["seed"]),
+            dataset,
+            row["id"],
+            folds,
+        )
         for row in rows
     }
     members = []
@@ -150,16 +157,47 @@ def fit_gain_ensemble(rows, config):
         ):
             raise ValueError("Invalid gain training data")
         normalizer = StandardScaler().fit(x)
-        predictor = Ridge(
-            alpha=config["selector"]["ridge_alpha"], fit_intercept=True
-        ).fit(normalizer.transform(x), y)
+        parameters = config.get("controls", {}).get("mlp")
+        if formulation == "mlp":
+            required = {
+                "hidden_layer_sizes",
+                "activation",
+                "solver",
+                "alpha",
+                "learning_rate_init",
+                "max_iter",
+            }
+            if parameters is None or not required <= parameters.keys():
+                raise ValueError(
+                    "MLP control requires explicit hidden_layer_sizes, activation, solver, alpha, learning_rate_init and max_iter"
+                )
+            settings = dict(parameters)
+            settings.setdefault("random_state", config["seed"] + int(held_out))
+            settings.setdefault("early_stopping", False)
+            predictor = MLPRegressor(**settings).fit(normalizer.transform(x), y)
+            weights = {
+                "kind": "mlp",
+                "activation": predictor.activation,
+                "layers": [value.tolist() for value in predictor.coefs_],
+                "biases": [value.tolist() for value in predictor.intercepts_],
+                "parameters": settings,
+                "iterations": int(predictor.n_iter_),
+            }
+        else:
+            predictor = Ridge(
+                alpha=config["selector"]["ridge_alpha"], fit_intercept=True
+            ).fit(normalizer.transform(x), y)
+            weights = {
+                "kind": "ridge",
+                "coefficients": predictor.coef_.tolist(),
+                "intercept": float(predictor.intercept_),
+            }
         members.append(
             {
                 "held_out_fold": held_out,
                 "mean": normalizer.mean_.tolist(),
                 "scale": normalizer.scale_.tolist(),
-                "coefficients": predictor.coef_.tolist(),
-                "intercept": float(predictor.intercept_),
+                **weights,
                 "fitting_question_ids": [row["id"] for row in selected],
             }
         )
@@ -168,11 +206,16 @@ def fit_gain_ensemble(rows, config):
         "dataset": dataset,
         "seed": config["seed"],
         "fold_assignment": assignment,
+        "fold_seed": config["selector"].get("fold_seed", config["seed"]),
         "formulation": formulation,
         "feature_names": names,
         "auxiliary": auxiliary,
         "members": members,
-        "alpha": config["selector"]["ridge_alpha"],
+        "alpha": (
+            config["controls"]["mlp"]["alpha"]
+            if formulation == "mlp"
+            else config["selector"]["ridge_alpha"]
+        ),
         "replacements_per_position": config["selector"]["replacements_per_position"],
         "training_question_ids": [row["id"] for row in rows],
         "training_question_texts": [row["question"] for row in rows],
@@ -211,9 +254,28 @@ def predict_gain(bundle, vectors, baseline_vectors=None):
         scale = np.asarray(member["scale"])
         if np.any(scale <= 0):
             raise ValueError("Invalid fitted feature scale")
-        prediction = ((encoded - member["mean"]) / scale) @ np.asarray(
-            member["coefficients"]
-        ) + member["intercept"]
+        normalized = (encoded - member["mean"]) / scale
+        if member.get("kind") == "mlp":
+            hidden = normalized
+            for index, (weights, biases) in enumerate(
+                zip(member["layers"], member["biases"])
+            ):
+                hidden = hidden @ np.asarray(weights) + np.asarray(biases)
+                if index < len(member["layers"]) - 1:
+                    activation = member["activation"]
+                    if activation == "relu":
+                        hidden = np.maximum(hidden, 0)
+                    elif activation == "tanh":
+                        hidden = np.tanh(hidden)
+                    elif activation == "logistic":
+                        hidden = 1 / (1 + np.exp(-np.clip(hidden, -700, 700)))
+                    elif activation != "identity":
+                        raise ValueError("Unsupported fitted MLP activation")
+            prediction = hidden.reshape(-1)
+        else:
+            prediction = (
+                normalized @ np.asarray(member["coefficients"]) + member["intercept"]
+            )
         if formulation == "shared_absolute":
             prediction -= ((base - member["mean"]) / scale) @ np.asarray(
                 member["coefficients"]
@@ -291,6 +353,19 @@ def tune_gate(rows, bundle, config):
         raise ValueError("Development overlaps gain training")
     if not rows:
         raise ValueError("Development is empty")
+    prepared = []
+    for row in rows:
+        _, audit = choose_pair(row, bundle, 0.0, 0.0)
+        labels = {tuple(label["indices"]): label for label in row["gain_labels"]}
+        prepared.append(
+            (
+                row["baseline_f1"],
+                [
+                    (item["mean"], item["std"], labels[tuple(item["indices"])]["f1"])
+                    for item in audit["proposals"]
+                ],
+            )
+        )
     table = []
     kappas = (
         [0.0]
@@ -299,25 +374,20 @@ def tune_gate(rows, bundle, config):
     )
     for kappa in kappas:
         for tau in config["selector"]["tau_grid"]:
-            selected_f1, accepted, harmed = [], 0, 0
-            for row in rows:
-                pair, audit = choose_pair(row, bundle, kappa, tau)
-                labels = {
-                    tuple(label["indices"]): label for label in row["gain_labels"]
-                }
-                f1 = (
-                    labels[tuple(pair)]["f1"]
-                    if audit["accepted"]
-                    else row["baseline_f1"]
-                )
-                selected_f1.append(f1)
-                accepted += int(audit["accepted"])
-                harmed += int(f1 < row["baseline_f1"])
+            scores, accepted, harmed = [], 0, 0
+            for baseline, candidates in prepared:
+                risk = [mean - kappa * std for mean, std, f1 in candidates]
+                best_index = int(np.argmax(risk)) if risk else None
+                changed = best_index is not None and risk[best_index] > tau
+                f1 = candidates[best_index][2] if changed else baseline
+                scores.append(f1)
+                accepted += int(changed)
+                harmed += int(f1 < baseline)
             table.append(
                 {
                     "kappa": float(kappa),
                     "tau": float(tau),
-                    "mean_f1": float(np.mean(selected_f1)),
+                    "mean_f1": float(np.mean(scores)),
                     "accepted": accepted,
                     "harmful": harmed,
                 }
@@ -443,3 +513,78 @@ def gain_diagnostics(rows, bundle, gate, baselines=None):
             diagnostic_summary(group)
         )
     return result
+
+
+def tune_shared_gate(rows_by_dataset, bundles, config):
+    if not rows_by_dataset or rows_by_dataset.keys() != bundles.keys():
+        raise ValueError(
+            "Shared acceptance search needs development rows and a bundle for each dataset"
+        )
+    training_texts = {
+        question_key(text)
+        for bundle in bundles.values()
+        for text in bundle["training_question_texts"]
+    }
+    if any(
+        question_key(row["question"]) in training_texts
+        for rows in rows_by_dataset.values()
+        for row in rows
+    ):
+        raise ValueError("Shared development overlaps gain training")
+    searches = {}
+    for dataset, rows in rows_by_dataset.items():
+        if (
+            any(row["dataset"] != dataset for row in rows)
+            or bundles[dataset]["dataset"] != dataset
+        ):
+            raise ValueError("Development dataset differs from gain bundle")
+        assert_disjoint({"development": rows})
+        searches[dataset] = tune_gate(rows, bundles[dataset], config)
+    combined = {}
+    for dataset, result in searches.items():
+        for candidate in result["grid"]:
+            key = candidate["kappa"], candidate["tau"]
+            item = combined.setdefault(
+                key,
+                {
+                    "kappa": key[0],
+                    "tau": key[1],
+                    "mean_f1": 0.0,
+                    "accepted": 0,
+                    "harmful": 0,
+                    "per_dataset_mean_f1": {},
+                },
+            )
+            item["mean_f1"] += candidate["mean_f1"] / len(searches)
+            item["accepted"] += candidate["accepted"]
+            item["harmful"] += candidate["harmful"]
+            item["per_dataset_mean_f1"][dataset] = candidate["mean_f1"]
+    table = list(combined.values())
+    if any(len(item["per_dataset_mean_f1"]) != len(searches) for item in table):
+        raise ValueError("Datasets must use a common acceptance grid")
+    best = max(
+        table,
+        key=lambda item: (
+            item["mean_f1"],
+            -item["accepted"],
+            item["kappa"],
+            item["tau"],
+        ),
+    )
+    return {
+        "best": best,
+        "grid": table,
+        "scope": "shared_development_macro",
+        "datasets": list(searches),
+        "seed": config["seed"],
+        "development_question_ids": {
+            dataset: result["development_question_ids"]
+            for dataset, result in searches.items()
+        },
+        "development_question_texts": {
+            dataset: result["development_question_texts"]
+            for dataset, result in searches.items()
+        },
+        "development_questions": sum(len(rows) for rows in rows_by_dataset.values()),
+        "test_used": False,
+    }

@@ -23,3 +23,7 @@ Obtain complete model snapshots, including their accompanying licenses, from the
 ## Dataset assets
 
 HotpotQA, 2WikiMultiHopQA, MuSiQue, Natural Questions, and TriviaQA remain subject to their respective dataset terms. The NQ/TriviaQA candidate format follows the E5 retrieval exports distributed with [RAG-Critic](https://github.com/RUC-NLPIR/RAG-Critic). Dataset files are obtained separately and are excluded from the code archive.
+
+## Reader-transfer models
+
+The reader-transfer configuration additionally references Qwen2.5-1.5B/14B-Instruct, Llama-3.1-8B-Instruct, Mistral-7B-Instruct-v0.3, and InternLM3-8B-Instruct. Their local snapshots retain the respective provider licenses. InternLM3 loading follows its [model instructions](https://huggingface.co/internlm/internlm3-8b-instruct), including its custom tokenizer and model code. These assets are obtained separately.

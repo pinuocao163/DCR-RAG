@@ -10,7 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from birrag.config import load_config
 from birrag.data import assert_disjoint
-from birrag.gain import FORMULATIONS, fit_gain_ensemble, gain_diagnostics, tune_gate
+from birrag.gain import (
+    FORMULATIONS,
+    fit_gain_ensemble,
+    gain_diagnostics,
+    tune_shared_gate,
+)
 from birrag.io import digest, load_rows, output_path, save_json, save_rows
 from birrag.experiments import aggregate_diagnostics, gain_predictions
 from birrag.metrics import paired_bootstrap
@@ -22,52 +27,76 @@ def main():
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--dataset", default="all")
     parser.add_argument("--output-root", required=True)
-    parser.add_argument(
-        "--formulations", nargs="+", choices=FORMULATIONS, default=list(FORMULATIONS)
-    )
+    parser.add_argument("--formulations", nargs="+", choices=FORMULATIONS)
+    parser.add_argument("--mlp-config")
     args = parser.parse_args()
     run_root = Path(args.run_root).resolve()
     config_path = (
         Path(args.config) if args.config else run_root / "resolved_config.json"
     )
     config = load_config(config_path)
+    if args.mlp_config:
+        config.setdefault("controls", {})["mlp"] = json.loads(
+            Path(args.mlp_config).read_text()
+        )
+    args.formulations = args.formulations or [
+        name
+        for name in FORMULATIONS
+        if name != "mlp" or config.get("controls", {}).get("mlp")
+    ]
     output_root = output_path(args.output_root)
     datasets = list(config["datasets"]) if args.dataset == "all" else [args.dataset]
     results = {formulation: {} for formulation in args.formulations}
     predictions = {formulation: [] for formulation in args.formulations}
+    grouped = {}
     for dataset in datasets:
         paths = {
             split: run_root / dataset / f"{split}.gains.jsonl"
             for split in ("gain_train", "dev", "test")
         }
-        rows = {split: load_rows(path) for split, path in paths.items()}
-        assert_disjoint(rows)
-        for formulation in args.formulations:
-            current = copy.deepcopy(config)
-            current["selector"]["formulation"] = formulation
-            bundle = fit_gain_ensemble(rows["gain_train"], current)
-            gate = tune_gate(rows["dev"], bundle, current)
-            destination = output_root / dataset / formulation
-            save_json(destination / "gain_ensemble.json", bundle)
-            gate["bundle_sha256"] = digest(destination / "gain_ensemble.json")
-            save_json(destination / "gate.json", gate)
-            diagnostics = gain_diagnostics(rows["test"], bundle, gate["best"])
-            save_json(destination / "diagnostics.json", diagnostics)
-            results[formulation][dataset] = diagnostics
-            predicted = gain_predictions(rows["test"], bundle, gate["best"])
-            save_rows(destination / "predictions.jsonl", predicted)
-            predictions[formulation].extend(predicted)
+        grouped[dataset] = {split: load_rows(path) for split, path in paths.items()}
+        assert_disjoint(grouped[dataset])
         save_json(
             output_root / dataset / "input_manifest.json",
             {
                 split: {
-                    "path": str(paths[split]),
-                    "sha256": digest(paths[split]),
-                    "questions": len(rows[split]),
+                    "path": str(path),
+                    "sha256": digest(path),
+                    "questions": len(grouped[dataset][split]),
                 }
-                for split in paths
+                for split, path in paths.items()
             },
         )
+    for formulation in args.formulations:
+        current = copy.deepcopy(config)
+        current["selector"]["formulation"] = formulation
+        bundles = {
+            dataset: fit_gain_ensemble(grouped[dataset]["gain_train"], current)
+            for dataset in datasets
+        }
+        gate = tune_shared_gate(
+            {dataset: grouped[dataset]["dev"] for dataset in datasets}, bundles, current
+        )
+        save_json(output_root / formulation / "shared_gate.json", gate)
+        for dataset in datasets:
+            destination = output_root / dataset / formulation
+            save_json(destination / "gain_ensemble.json", bundles[dataset])
+            dataset_gate = {
+                **gate,
+                "dataset": dataset,
+                "bundle_sha256": digest(destination / "gain_ensemble.json"),
+            }
+            save_json(destination / "gate.json", dataset_gate)
+            diagnostics = gain_diagnostics(
+                grouped[dataset]["test"], bundles[dataset], gate["best"]
+            )
+            save_json(destination / "diagnostics.json", diagnostics)
+            results[formulation][dataset] = diagnostics
+            predicted = gain_predictions(
+                grouped[dataset]["test"], bundles[dataset], gate["best"]
+            )
+            save_rows(destination / "predictions.jsonl", predicted)
+            predictions[formulation].extend(predicted)
     macro = {}
     for formulation, per_dataset in results.items():
         values = list(per_dataset.values())
@@ -84,6 +113,18 @@ def main():
             "accepted": accepted,
             "harmful": harmed,
             "harm_per_accepted": harmed / accepted if accepted else 0.0,
+            "acceptance_rate": accepted / sum(item["questions"] for item in values),
+            "macro_independent_f1": 100
+            * float(
+                np.mean(
+                    [
+                        np.mean(
+                            [row["baseline_f1"] for row in grouped[dataset]["test"]]
+                        )
+                        for dataset in per_dataset
+                    ]
+                )
+            ),
             "datasets": per_dataset,
             "pooled_initial_f1_strata": {
                 key: aggregate_diagnostics(

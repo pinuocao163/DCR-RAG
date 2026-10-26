@@ -43,11 +43,11 @@ Feature extraction uses question, draft, candidate text, and model scores. Gold 
 
 `birrag/gain.py` labels each proposal with its complete-answer reader F1 minus the initial pair's reader F1. The frozen reader, decoding, and token budgets are shared across all pairs. Scorer-training and gain-training questions are disjoint.
 
-Question folds use the integer value of `SHA256(seed || dataset || id)` modulo five. The fields are concatenated as UTF-8 strings without a separator. Every proposal for one question belongs to its question's fold. Each Ridge member fits its own `StandardScaler` on four folds, then fits an intercept and coefficients with `alpha=10`. Constant features use scale one.
+Question folds use the integer value of `SHA256(fold_seed || dataset || id)` modulo five. The fields are concatenated as UTF-8 strings without a separator. Every proposal for one question belongs to its question's fold. `fold_seed=2094` is frozen across training seeds. Each Ridge member fits its own `StandardScaler` on four folds, then fits an intercept and coefficients with `alpha=10`. Constant features use scale one.
 
 Inference computes the mean and population standard deviation (`ddof=0`) of the five gain predictions. A proposal's conservative score is `mean - kappa * std`. The best proposal is accepted only when this score is strictly greater than `tau`; otherwise the initial pair remains selected.
 
-Development questions select `kappa` from `{0, 0.25, 0.5, 1, 2}` and `tau` from `{0, 0.005, 0.01, 0.02, 0.05, 0.1}`. Selection maximizes development mean F1. Equal scores prefer fewer accepted replacements, then larger `kappa` and `tau`. Standardizers, coefficients, and acceptance parameters remain fixed for test inference.
+The main acceptance grid is `kappa={0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3}` and `tau={0, 0.005, 0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.075, 0.1}` on normalized F1 gains. Five development sets of 100 questions select one shared pair by equal-weight dataset macro F1. All dataset-specific gain models are fitted before the search; test questions never enter it. Grid ties prefer fewer accepts, then larger kappa and tau. The paper's selected pair is kappa=1 and tau=0.04. A single-dataset pipeline uses this published fixed pair unless `--shared-gate` is supplied. Each gate records its scope and gain-bundle checksum. All learned artifacts and acceptance parameters remain fixed during testing and confirmation.
 
 ## Gain-formulation controls
 
@@ -60,6 +60,7 @@ The comparison script uses shared question sets, proposals, and cached reader ou
 - **Shared absolute:** a common Ridge member predicts absolute F1 for both pairs; their predictions are subtracted. Each initial pair contributes once per training question.
 - **Single Ridge:** one predictor fits all gain-training questions, with no disagreement penalty.
 - **Zero Gain:** predicted gains and disagreement are zero.
+- **MLP gain:** five fold-specific, standardized networks regress proposal gains. Network structure and optimizer settings are supplied explicitly with `--mlp-config`; the fitted weights and activation are serialized with the same feature schema.
 
 Feature transformations precede member-specific standardization. Initial-pair observed F1 is used only for offline diagnostic strata. Harm means a strict decrease in reader F1 relative to the initial pair.
 
@@ -77,7 +78,7 @@ The main-test and confirmation routes share the main trained scorer, gain ensemb
 
 Main-test and confirmation compare conditional and independent selection using the same trained scorer. Their populations and macro results are reported separately.
 
-All gain-formulation controls reuse fitting questions, development questions, proposals, reader outputs, features, and alpha=10. Two-block concatenation retains 68 standardized inputs for the 34-dimensional base schema; three-block retains 102. Each model fits its own training-fold standardizer after feature transformation, and all use the same development search.
+All gain-formulation controls reuse fitting questions, development questions, proposals, reader outputs, and features. Ridge formulations use alpha=10; the MLP uses its supplied configuration. Two-block concatenation retains 68 standardized inputs for the 34-dimensional base schema; three-block retains 102. Each model fits its own training-fold standardizer after feature transformation, and all use the same development search.
 
 ## Draft-match sparsity
 
@@ -85,9 +86,9 @@ All gain-formulation controls reuse fitting questions, development questions, pr
 
 ## Fixed-scorer heuristics and frozen transfer
 
-Appendix B.3 (equations 19–20) defines `A=(p_u+p_v)/2` for pool-normalized student scores, passage Jaccard `J`, union question coverage `C`, and mean bidirectional residual coverage `R`. The implemented pair scores are `A-lambda*J`, `A+beta*C`, and `A+beta*C+gamma*R-delta*J`. The search domain is the original Top-2 pair plus its at-most-eight replacements. MMR compares whole pairs; it does not fix the first passage. Equal scores retain the original pair, then BGE order.
+Appendix B.3 (equations 18–19) defines `A=(p_u+p_v)/2` for pool-normalized student scores, passage Jaccard `J`, union question coverage `C`, and mean bidirectional residual coverage `R`. The implemented pair scores are `A-lambda*J`, `A+beta*C`, and `A+beta*C+gamma*R-delta*J`. The search domain is the original Top-2 pair plus its at-most-eight replacements. MMR compares whole pairs; it does not fix the first passage. Equal scores retain the original pair, then BGE order.
 
-Policy weights use the common development datasets and maximize equal-weight dataset macro F1 over `{0,.25,.5,.75,1}`: 5, 5, and 125 configurations. They use development absolute answer F1 but no reader-gain training targets. Weight-grid ties prefer fewer departures from original Top-2, then smaller weights..
+Policy weights use the common development datasets and maximize equal-weight dataset macro F1 over `{0,.25,.5,.75,1}`: 5, 5, and 125 configurations. They use development absolute answer F1 but no reader-gain training targets. Weight-grid ties prefer fewer departures from original Top-2, then smaller weights.
 
 Policy-specific replacement proposals retain one passage from the chosen heuristic pair. The main Direct Gain ensemble, fitted preprocessing, kappa, and threshold are applied without refitting. New observed gain targets are computed only for offline error reporting relative to that policy's initial-pair answer. Cached reader answers are reused, and missing bounded-local-search pairs are generated with the same reader/settings. The code saves initial and after predictions for paired analysis and verifies unchanged ensemble/gate checksums.
 
@@ -98,7 +99,6 @@ Mean-only retains every ensemble member and its predicted gain, setting kappa to
 Thresholds are chosen at observed score cut points plus a point below the minimum, enforcing the same strict `score > tau` rule. Equal-score groups are never split. If a target is unattainable, the closest development count is selected, then fewer accepts and a larger threshold break ties. Negative thresholds are permitted for target curves; neither main model weights nor the quality-selected main gate is altered.
 
 Diagnostics separately count beneficial, unchanged, and harmful accepts; preserve failures and zero-change questions in the denominator; and report positive and negative gain means. Formal gain MAE uses per-question proposal averages, followed by equal dataset macro weighting. Initial-F1-bin diagnostics additionally report proposal-weighted MAE and raw error sums/counts; those pooled bin values must not be confused with the formal dataset-macro metric. Gain-formulation and policy contrasts use question-paired bootstrap at seed 2092 with 10,000 draws.
-
 
 ## Paired statistical comparisons
 
@@ -123,3 +123,9 @@ Title-only and passage-header tokens are excluded from text visibility. Each vie
 `compare_budgets.py` uses the highest student score at k=1, the saved main conditional pair at k=2, and appends highest-scored remaining passages at k=3/4. Score ties follow BGE order, as does final display order. The reader input/output caps remain 2048/32 tokens. BGE selects the first k candidates in the same pool.
 
 The script verifies question metadata, passage IDs/text/order, and trained-artifact checksums. It writes per-budget DCR-RAG/BGE predictions, support metrics, paired F1 intervals, and consecutive-budget F1 effects. Scorer, gain ensemble, preprocessing, and acceptance settings remain fixed.
+
+## Joint uncertainty and reader transfer
+
+`joint_paired_bootstrap` samples training seeds and question IDs with route pairing. Every replicate shares its seed draws across datasets and averages dataset effects equally. Question draws within a dataset are shared across selected seeds and routes. This differs from seed-averaged intervals, which average per-question effects before resampling only questions.
+
+`compare_readers.py` freezes the independent and conditional passage IDs produced with the main learned scorer and selector. Each new reader receives the same original passage text, BGE order, prompt, and input/output caps. The scorer, gain models, and acceptance settings are neither fitted nor tuned for the new reader. Checksums are verified before and after transfer. The accepted-swap population is determined by the frozen selection, and beneficial/unchanged/harmful outcomes are recomputed from the new reader's answers. Single-seed and multi-seed outputs include paired F1 effects, counts, and harm/accepted rates.

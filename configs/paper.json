@@ -42,21 +42,34 @@
     "ridge_alpha": 10.0,
     "replacements_per_position": 4,
     "kappa_grid": [
-      0.0,
+      0,
       0.25,
       0.5,
-      1.0,
-      2.0
+      0.75,
+      1,
+      1.5,
+      2,
+      3
     ],
     "tau_grid": [
-      0.0,
+      0,
       0.005,
       0.01,
+      0.015,
       0.02,
+      0.03,
+      0.04,
       0.05,
+      0.075,
       0.1
     ],
-    "formulation": "direct"
+    "formulation": "direct",
+    "fold_seed": 2094,
+    "acceptance_scope": "shared_development_macro",
+    "paper_gate": {
+      "kappa": 1.0,
+      "tau": 0.04
+    }
   },
   "datasets": {
     "hotpotqa": {
