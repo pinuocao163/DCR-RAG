@@ -27,7 +27,10 @@ def run(command, config, output, **kwargs):
         str(output),
     ]
     for name, value in kwargs.items():
-        if value is not None:
+        if isinstance(value, bool):
+            if value:
+                arguments.append("--" + name.replace("_", "-"))
+        elif value is not None:
             arguments.extend(["--" + name.replace("_", "-"), str(value)])
     environment = dict(os.environ)
     environment["PYTHONPATH"] = (
@@ -102,13 +105,47 @@ def main():
     )
     parser.add_argument("--output-root", default=str(ROOT / "runs/paper"))
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--split-dir")
+    split_options = parser.add_mutually_exclusive_group()
+    split_options.add_argument("--split-dir")
+    split_options.add_argument("--reuse-splits-from")
     parser.add_argument("--label-test-proposals", action="store_true")
     parser.add_argument("--shared-gate")
+    parser.add_argument(
+        "--ablation",
+        choices=(
+            "main",
+            "no_draft",
+            "question_only",
+            "bge_only",
+            "deletion_only",
+            "no_backfill",
+        ),
+        default="main",
+    )
     args = parser.parse_args()
     root = output_path(args.output_root)
+    if args.reuse_splits_from and root == Path(args.reuse_splits_from).resolve():
+        raise ValueError("Ablation output must differ from its source experiment")
     root.mkdir(parents=True, exist_ok=True)
     config = load_config(args.config)
+    method = config.setdefault(
+        "method",
+        {
+            "draft_source": "pool",
+            "scorer_draft": True,
+            "teacher": "hybrid",
+            "deletion_context": "backfill",
+        },
+    )
+    changes = {
+        "no_draft": {"scorer_draft": False},
+        "question_only": {"draft_source": "question"},
+        "bge_only": {"teacher": "bge_only"},
+        "deletion_only": {"teacher": "deletion_only"},
+        "no_backfill": {"deletion_context": "fixed_prefix"},
+    }
+    method.update(changes.get(args.ablation, {}))
+    config["ablation"] = args.ablation
     if args.seed is not None:
         config["seed"] = args.seed
     config_path = root / "resolved_config.json"
@@ -124,12 +161,24 @@ def main():
         )
         if args.split_dir and args.dataset == "all":
             split_dir = split_dir / dataset
-        if not args.split_dir:
+        if args.reuse_splits_from:
+            split_dir = Path(args.reuse_splits_from).resolve() / dataset / "splits"
+        if not args.split_dir and not args.reuse_splits_from:
             run("prepare", config_path, split_dir, dataset=dataset)
         groups = {
             name: load_rows(split_dir / f"{name}.jsonl")
             for name in ("scorer_train", "gain_train", "dev", "test")
         }
+        expected_counts = {
+            "scorer_train": config["scorer_train_questions"],
+            "gain_train": config["gain_train_questions"],
+            "dev": config["dev_questions"],
+            "test": config["datasets"][dataset]["test_questions"],
+        }
+        if any(len(groups[name]) != count for name, count in expected_counts.items()):
+            raise ValueError(
+                "Prepared split sizes differ from the configured experiment"
+            )
         confirmation_count = config["datasets"][dataset].get(
             "confirmation_questions", 0
         )
@@ -178,7 +227,7 @@ def main():
         shared = json.loads(Path(args.shared_gate).read_text())
         if "best" not in shared:
             raise ValueError("The supplied shared gate must contain best parameters")
-    elif len(datasets) == len(config["datasets"]):
+    elif len(datasets) == len(config["datasets"]) or args.ablation != "main":
         shared = tune_shared_gate(
             {
                 dataset: load_rows(root / dataset / "dev.gains.jsonl")
@@ -219,6 +268,8 @@ def main():
         )
         if args.split_dir and args.dataset == "all":
             split_dir = split_dir / dataset
+        if args.reuse_splits_from:
+            split_dir = Path(args.reuse_splits_from).resolve() / dataset / "splits"
         confirmation_count = config["datasets"][dataset].get(
             "confirmation_questions", 0
         )

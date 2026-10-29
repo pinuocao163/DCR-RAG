@@ -8,7 +8,7 @@ from sklearn.preprocessing import StandardScaler
 from .data import assert_disjoint, question_key
 from .features import feature_names, feature_vector, proposals
 from .metrics import answer_metrics
-from .prompts import qa_prompt
+from .reading import generate_pair
 
 FORMULATIONS = (
     "direct",
@@ -39,20 +39,27 @@ def label_gains(row, reader, config):
     baseline, alternatives = proposals(
         row, config["selector"]["replacements_per_position"]
     )
-    input_cap = config["generation"]["reader_input_cap"]
-    output_cap = config["generation"]["reader_output_cap"]
-    base_answer = reader.generate(qa_prompt(row, baseline), input_cap, output_cap)
-    base_metrics = answer_metrics(base_answer, row["answers"], row["dataset"])
+    base_answer, base_error = generate_pair(row, reader, baseline, config["generation"])
+    base_metrics = (
+        answer_metrics(base_answer, row["answers"], row["dataset"])
+        if base_error is None
+        else {"em": 0.0, "f1": 0.0}
+    )
     labels = []
     auxiliary = config["datasets"][row["dataset"]]["auxiliary"]
     for pair in alternatives:
-        answer = reader.generate(qa_prompt(row, pair), input_cap, output_cap)
-        metrics = answer_metrics(answer, row["answers"], row["dataset"])
+        answer, error = generate_pair(row, reader, pair, config["generation"])
+        metrics = (
+            answer_metrics(answer, row["answers"], row["dataset"])
+            if error is None
+            else {"em": 0.0, "f1": 0.0}
+        )
         labels.append(
             {
                 "indices": list(pair),
                 "features": feature_vector(row, pair, auxiliary).tolist(),
                 "answer": answer,
+                "generation_error": error,
                 "f1": metrics["f1"],
                 "gain": metrics["f1"] - base_metrics["f1"],
             }
@@ -61,6 +68,7 @@ def label_gains(row, reader, config):
         **row,
         "baseline_indices": list(baseline),
         "baseline_answer": base_answer,
+        "baseline_generation_error": base_error,
         "baseline_f1": base_metrics["f1"],
         "gain_labels": labels,
         "feature_names": feature_names(auxiliary),
@@ -103,13 +111,19 @@ def fitting_examples(rows, auxiliary, formulation):
     return np.asarray(features, dtype=np.float64), np.asarray(targets, dtype=np.float64)
 
 
-def fit_gain_ensemble(rows, config):
+def fit_gain_ensemble(rows, config, target_dataset=None):
     if not rows:
         raise ValueError("Gain training is empty")
-    dataset = rows[0]["dataset"]
-    if any(row["dataset"] != dataset for row in rows):
+    dataset = target_dataset or rows[0]["dataset"]
+    sources = sorted({row["dataset"] for row in rows})
+    if target_dataset is None and len(sources) != 1:
         raise ValueError("Gain predictors are fitted separately for each dataset")
-    assert_disjoint({"gain_train": rows})
+    if target_dataset is not None and target_dataset in sources:
+        raise ValueError("LODO gain fitting cannot include the target dataset")
+    for source in sources:
+        assert_disjoint(
+            {"gain_train": [row for row in rows if row["dataset"] == source]}
+        )
     folds = config["selector"]["folds"]
     formulation = config["selector"].get("formulation", "direct")
     if formulation not in FORMULATIONS:
@@ -118,10 +132,18 @@ def fit_gain_ensemble(rows, config):
     names = feature_names(auxiliary)
     if any(row.get("feature_names") != names for row in rows):
         raise ValueError("Inconsistent feature schema")
+
+    def key(row):
+        return (
+            f"{row['dataset']}:{row['id']}"
+            if target_dataset is not None
+            else str(row["id"])
+        )
+
     assignment = {
-        str(row["id"]): fold_index(
+        key(row): fold_index(
             config["selector"].get("fold_seed", config["seed"]),
-            dataset,
+            row["dataset"],
             row["id"],
             folds,
         )
@@ -135,9 +157,7 @@ def fit_gain_ensemble(rows, config):
     )
     for held_out in holdouts:
         selected = [
-            row
-            for row in rows
-            if held_out is None or assignment[str(row["id"])] != held_out
+            row for row in rows if held_out is None or assignment[key(row)] != held_out
         ]
         x, y = fitting_examples(selected, auxiliary, formulation)
         if x.size == 0:
@@ -217,6 +237,8 @@ def fit_gain_ensemble(rows, config):
             else config["selector"]["ridge_alpha"]
         ),
         "replacements_per_position": config["selector"]["replacements_per_position"],
+        "source_datasets": sources,
+        "training_question_keys": [[row["dataset"], str(row["id"])] for row in rows],
         "training_question_ids": [row["id"] for row in rows],
         "training_question_texts": [row["question"] for row in rows],
         "ddof": 0,
@@ -287,12 +309,22 @@ def predict_gain(bundle, vectors, baseline_vectors=None):
     return predictions.mean(axis=0), predictions.std(axis=0, ddof=0)
 
 
-def choose_pair(row, bundle, kappa, tau, baseline=None):
+def choose_pair(row, bundle, kappa, tau, baseline=None, candidates=None):
     if kappa < 0:
         raise ValueError("kappa must be nonnegative")
     baseline, alternatives = proposals(
         row, bundle["replacements_per_position"], baseline
     )
+    if candidates is not None:
+        alternatives = [tuple(sorted(pair)) for pair in candidates]
+        if len(set(alternatives)) != len(alternatives) or any(
+            len(pair) != 2
+            or len(set(pair)) != 2
+            or pair == baseline
+            or any(index < 0 or index >= len(row["ctxs"]) for index in pair)
+            for pair in alternatives
+        ):
+            raise ValueError("Invalid or duplicate replacement candidates")
     if not alternatives:
         return baseline, {
             "accepted": False,
@@ -342,11 +374,16 @@ def choose_pair(row, bundle, kappa, tau, baseline=None):
 
 def tune_gate(rows, bundle, config):
     training_ids = set(map(str, bundle["training_question_ids"]))
+    training_keys = {tuple(key) for key in bundle.get("training_question_keys", [])}
     training_questions = {
         question_key(text) for text in bundle["training_question_texts"]
     }
     if any(
-        str(row["id"]) in training_ids
+        (
+            (row["dataset"], str(row["id"])) in training_keys
+            if training_keys
+            else str(row["id"]) in training_ids
+        )
         or question_key(row["question"]) in training_questions
         for row in rows
     ):

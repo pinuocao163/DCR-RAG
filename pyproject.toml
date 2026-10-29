@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dcrrag"
-description = "DCR-RAG: Draft-Conditioned Ranking with Conservative Passage Replacement"
+description = "DCR-RAG: Draft-Conditioned Ranking with Conservative Passage Replacement for Retrieval-Augmented Generation"
 version = "1.0.0"
 readme = "README.md"
 requires-python = ">=3.9"

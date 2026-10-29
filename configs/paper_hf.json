@@ -154,5 +154,11 @@
       0.4,
       0.5
     ]
+  },
+  "method": {
+    "draft_source": "pool",
+    "scorer_draft": true,
+    "teacher": "hybrid",
+    "deletion_context": "backfill"
   }
 }

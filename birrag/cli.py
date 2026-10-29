@@ -106,8 +106,12 @@ def stage_draft(args, config):
     for index, row in enumerate(rows):
         if not row.get("bge_ordered"):
             raise ValueError("Draft input must be the fixed BGE-ordered pool")
+        source = config.get("method", {}).get("draft_source", "pool")
+        if source not in ("pool", "question"):
+            raise ValueError("Unknown draft source")
+        row["draft_source"] = source
         row["draft"] = model.generate(
-            qa_prompt(row),
+            qa_prompt(row, [] if source == "question" else None),
             config["generation"]["draft_input_cap"],
             config["generation"]["draft_output_cap"],
         )
@@ -116,14 +120,27 @@ def stage_draft(args, config):
 
 
 def stage_teacher(args, config):
-    model = generator(config, "reference", args.device, for_scoring=True)
+    variant = config.get("method", {}).get("teacher", "hybrid")
+    context = config.get("method", {}).get("deletion_context", "backfill")
+    model = (
+        generator(config, "reference", args.device, for_scoring=True)
+        if variant != "bge_only"
+        else None
+    )
     rows = rows_for(args)
     for index, row in enumerate(rows):
-        raw = necessity_scores(row, model, config["generation"]["draft_input_cap"])
+        raw = (
+            necessity_scores(
+                row, model, config["generation"]["draft_input_cap"], context
+            )
+            if model is not None
+            else [0.0] * len(row["ctxs"])
+        )
         for item, value in zip(row["ctxs"], raw):
             item["necessity_raw"] = value
         print(f"teacher {index + 1}/{len(rows)}", flush=True)
-    calibration = fit_teacher(rows)
+    calibration = fit_teacher(rows, variant)
+    calibration["deletion_context"] = context
     save_rows(args.output, rows)
     save_json(str(args.output) + ".calibration.json", calibration)
 
@@ -135,7 +152,12 @@ def stage_train(args, config):
     if args.device:
         config["device"] = args.device
     train_scorer(
-        rows, config, args.output, args.initial_model, include_draft=not args.no_draft
+        rows,
+        config,
+        args.output,
+        args.initial_model,
+        include_draft=not args.no_draft
+        and config.get("method", {}).get("scorer_draft", True),
     )
 
 
@@ -147,11 +169,18 @@ def stage_score(args, config):
         args.checkpoint,
         args.device or config["device"],
         token_config=config["tokenization"],
+        native_head=args.native_head,
     )
     for index, row in enumerate(rows):
         scores = scorer.score(
-            row, config["scoring_batch_size"], include_draft=not args.no_draft
+            row,
+            config["scoring_batch_size"],
+            include_draft=not args.no_draft
+            and config.get("method", {}).get("scorer_draft", True),
         )
+        row["draft_features_enabled"] = not args.no_draft and config.get(
+            "method", {}
+        ).get("scorer_draft", True)
         for item, score in zip(row["ctxs"], scores):
             item["student_score"] = score
         print(f"score {index + 1}/{len(rows)}", flush=True)
@@ -359,6 +388,7 @@ def main():
     parser.add_argument("--compare")
     parser.add_argument("--initial-model")
     parser.add_argument("--no-draft", action="store_true")
+    parser.add_argument("--native-head", action="store_true")
     parser.add_argument("--use-cached-scores", action="store_true")
     parser.add_argument(
         "--mode", choices=("conditional", "independent", "bge"), default="conditional"

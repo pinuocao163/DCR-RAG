@@ -129,3 +129,23 @@ The script verifies question metadata, passage IDs/text/order, and trained-artif
 `joint_paired_bootstrap` samples training seeds and question IDs with route pairing. Every replicate shares its seed draws across datasets and averages dataset effects equally. Question draws within a dataset are shared across selected seeds and routes. This differs from seed-averaged intervals, which average per-question effects before resampling only questions.
 
 `compare_readers.py` freezes the independent and conditional passage IDs produced with the main learned scorer and selector. Each new reader receives the same original passage text, BGE order, prompt, and input/output caps. The scorer, gain models, and acceptance settings are neither fitted nor tuned for the new reader. Checksums are verified before and after transfer. The accepted-swap population is determined by the frozen selection, and beneficial/unchanged/harmful outcomes are recomputed from the new reader's answers. Single-seed and multi-seed outputs include paired F1 effects, counts, and harm/accepted rates.
+
+## Scorer and teacher ablations
+
+The `method` configuration records the draft source, scorer draft input, teacher utility, and deletion context. Main defaults are `pool`, `true`, `hybrid`, and `backfill`. `run_pipeline.py --ablation` changes the investigated factor, retrains affected models, and reselects acceptance on the development splits. `--reuse-splits-from` reads the source run's exact split files, verifies configured split sizes, and writes all new artifacts under a separate output root.
+
+For `no_draft`, the scorer sees the question alone; draft length and draft-match gain features are zero. The answer-free teacher still uses its cached reference draft for preference construction. The question-only-draft arm uses the same drafting model and decoding with an empty evidence list. BGE-only and deletion-only teachers retain their respective terms of the hybrid utility and use the same Top-2 preference loss and training settings.
+
+For `no_backfill`, token offsets identify complete passage blocks in the original rendered prompt. The prompt is first truncated at 4072 tokens. Deletion removes only tokens belonging to that passage from this retained sequence; it neither retokenizes the remaining text nor admits later tokens. The fixed draft is evaluated with `mean_logprob_ids`. The main backfill arm rebuilds the prompt and reapplies the cap after each deletion.
+
+`compare_scorers.py` uses the native, unchanged BGE classification head on the same question–draft field. Main gain predictors, fitted preprocessing, and gate remain frozen. Both native and learned scorers serve independent and conditional routes. The interaction is `(learned full - learned independent) - (native full - native independent)`, evaluated on paired questions.
+
+## Leave-one-dataset-out gain transfer
+
+`compare_lodo.py` pools gain-training questions only from source datasets. Fold membership hashes the original dataset and question ID with the frozen salt; IDs from different datasets remain distinct. Each member fits its normalizer and Ridge weights on four source folds. Development macro F1 over source datasets selects acceptance. Target gain-training and development questions are never used for fitting or selection. Target test records are used after fitting for quality and error reporting; the target scorer and initial pairs are unchanged. Input partition checks reject ID or normalized-question leakage.
+
+## Proposal-search controls
+
+`compare_search.py` generates four or eight alternatives per initial position for the eight- and sixteen-pair caps, respectively, and deduplicates them. Exhaustive search evaluates all distinct passage pairs except the fallback initial pair. Proposal features, gain ensemble, population disagreement, strict acceptance, reader, and token budgets are fixed. The report measures whether the eight-pair set contains an exhaustive risk-score maximizer, with a numerical tie tolerance of 1e-12. The optional oracle evaluates the initial pair and all pairs using observed answer F1; it is labeled as an offline result.
+
+Reader generation failures are retained as empty answers with explicit errors and zero EM/F1 in both offline gain labeling and final evaluation. Cached formulation and policy comparisons propagate those errors rather than converting failed empty answers into matches to empty-normalized aliases.

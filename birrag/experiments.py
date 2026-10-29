@@ -11,9 +11,11 @@ def validate_development(rows, bundle):
         raise ValueError("Development is empty")
     assert_disjoint({"development": rows})
     ids = set(map(str, bundle["training_question_ids"]))
+    keys = {tuple(key) for key in bundle.get("training_question_keys", [])}
     questions = {question_key(text) for text in bundle["training_question_texts"]}
     if any(
-        str(row["id"]) in ids or question_key(row["question"]) in questions
+        ((row["dataset"], str(row["id"])) in keys if keys else str(row["id"]) in ids)
+        or question_key(row["question"]) in questions
         for row in rows
     ):
         raise ValueError("Development overlaps gain training")
@@ -80,14 +82,24 @@ def gain_predictions(rows, bundle, gate, baselines=None, initial_only=False):
                 gate["tau"],
                 None if baselines is None else baselines[str(row["id"])],
             )
-        response = (
-            row["baseline_answer"]
+        selected_label = (
+            None
             if tuple(selected) == baseline
             else next(
-                label["answer"]
+                label
                 for label in row["gain_labels"]
                 if tuple(label["indices"]) == tuple(selected)
             )
+        )
+        response = (
+            row["baseline_answer"]
+            if selected_label is None
+            else selected_label["answer"]
+        )
+        error = (
+            row.get("baseline_generation_error")
+            if selected_label is None
+            else selected_label.get("generation_error")
         )
         output.append(
             {
@@ -96,6 +108,7 @@ def gain_predictions(rows, bundle, gate, baselines=None, initial_only=False):
                 "dataset": row["dataset"],
                 "answers": row["answers"],
                 "prediction": response,
+                "generation_error": error,
                 "selected_indices": list(selected),
                 "selection": audit,
             }

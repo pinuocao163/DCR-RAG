@@ -91,10 +91,15 @@ class CausalGenerator:
 
     @torch.inference_mode()
     def mean_logprob(self, prompt, answer, input_cap):
+        return self.mean_logprob_ids(self.prompt_ids(prompt, input_cap), answer)
+
+    @torch.inference_mode()
+    def mean_logprob_ids(self, prompt_ids, answer):
         answer_ids = self.tokenizer.encode(answer.strip(), add_special_tokens=False)
         if not answer_ids:
             return 0.0
-        prompt_ids = self.prompt_ids(prompt, input_cap)
+        if not prompt_ids:
+            raise ValueError("Likelihood scoring requires a nonempty prompt prefix")
         all_ids = torch.tensor(
             [prompt_ids + answer_ids], dtype=torch.long, device=self.device
         )
@@ -165,13 +170,21 @@ def pair_encoding(tokenizer, query, document, config):
 
 class PassageScorer:
     def __init__(
-        self, path, device="cuda:0", dtype="float32", token_config=None, semantic=False
+        self,
+        path,
+        device="cuda:0",
+        dtype="float32",
+        token_config=None,
+        semantic=False,
+        native_head=False,
     ):
         self.device = torch.device(device)
         self.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True)
         self.tokenizer.truncation_side = "right"
         model_class = (
-            AutoModelForSequenceClassification if semantic else DraftPassageScorer
+            AutoModelForSequenceClassification
+            if semantic or native_head
+            else DraftPassageScorer
         )
         self.model = (
             model_class.from_pretrained(

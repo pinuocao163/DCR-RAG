@@ -27,6 +27,9 @@ SCRIPTS = (
     "compare_seeds.py",
     "compare_budgets.py",
     "compare_readers.py",
+    "compare_search.py",
+    "compare_lodo.py",
+    "compare_scorers.py",
     "package_submission.py",
 )
 

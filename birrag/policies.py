@@ -5,7 +5,7 @@ import numpy as np
 from .data import assert_disjoint
 from .features import FEATURE_NAMES, feature_vector, initial_pair, proposals
 from .metrics import answer_metrics
-from .prompts import qa_prompt
+from .reading import generate_pair
 
 POLICIES = ("top2", "mmr", "coverage", "combined")
 
@@ -86,22 +86,37 @@ def policy_answer_pairs(row, replacements=4):
 def attach_policy_answers(row, reader, config):
     cached = {}
     if "baseline_answer" in row:
-        cached[tuple(row["baseline_indices"])] = row["baseline_answer"]
+        cached[tuple(row["baseline_indices"])] = (
+            row["baseline_answer"],
+            row.get("baseline_generation_error"),
+        )
     for label in row.get("gain_labels", []):
-        cached[tuple(label["indices"])] = label["answer"]
+        cached[tuple(label["indices"])] = (
+            label["answer"],
+            label.get("generation_error"),
+        )
     answers = []
     for pair in policy_answer_pairs(
         row, config["selector"]["replacements_per_position"]
     ):
-        response = cached.get(pair)
-        if response is None:
-            response = reader.generate(
-                qa_prompt(row, pair),
-                config["generation"]["reader_input_cap"],
-                config["generation"]["reader_output_cap"],
-            )
-        metrics = answer_metrics(response, row["answers"], row["dataset"])
-        answers.append({"indices": list(pair), "answer": response, **metrics})
+        response, error = (
+            cached[pair]
+            if pair in cached
+            else generate_pair(row, reader, pair, config["generation"])
+        )
+        metrics = (
+            answer_metrics(response, row["answers"], row["dataset"])
+            if error is None
+            else {"em": 0.0, "f1": 0.0}
+        )
+        answers.append(
+            {
+                "indices": list(pair),
+                "answer": response,
+                "generation_error": error,
+                **metrics,
+            }
+        )
     return {**row, "pair_answers": answers}
 
 
@@ -173,6 +188,7 @@ def policy_gain_rows(rows, policy, parameters, replacements=4):
                 "indices": list(pair),
                 "features": feature_vector(row, pair).tolist(),
                 "answer": answers[pair]["answer"],
+                "generation_error": answers[pair].get("generation_error"),
                 "f1": answers[pair]["f1"],
                 "gain": answers[pair]["f1"] - answers[baseline]["f1"],
             }
@@ -183,6 +199,7 @@ def policy_gain_rows(rows, policy, parameters, replacements=4):
                 **row,
                 "baseline_indices": list(baseline),
                 "baseline_answer": answers[baseline]["answer"],
+                "baseline_generation_error": answers[baseline].get("generation_error"),
                 "baseline_f1": answers[baseline]["f1"],
                 "gain_labels": labels,
             }

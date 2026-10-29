@@ -4,15 +4,7 @@ import json
 from .prompts import SYSTEM, qa_prompt_with_spans
 
 
-def reader_input_trace(tokenizer, row, indices, input_cap, system=SYSTEM):
-    indices = sorted(indices)
-    if (
-        input_cap < 1
-        or len(set(indices)) != len(indices)
-        or any(index < 0 or index >= len(row["ctxs"]) for index in indices)
-    ):
-        raise ValueError("Invalid reader input cap or passage indices")
-    prompt, spans = qa_prompt_with_spans(row, indices)
+def rendered_token_offsets(tokenizer, prompt, system=SYSTEM):
     rendered = tokenizer.apply_chat_template(
         [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         tokenize=False,
@@ -35,6 +27,36 @@ def reader_input_trace(tokenizer, row, indices, input_cap, system=SYSTEM):
     offsets = encoded["offset_mapping"]
     if len(offsets) != len(ids):
         raise ValueError("Tokenizer offsets do not match reader tokens")
+    return ids, offsets, origin
+
+
+def fixed_prefix_deletions(tokenizer, row, input_cap, system=SYSTEM):
+    prompt, spans = qa_prompt_with_spans(row)
+    ids, offsets, origin = rendered_token_offsets(tokenizer, prompt, system)
+    ids, offsets = ids[:input_cap], offsets[:input_cap]
+    deletions = []
+    for span in spans:
+        start, end = [origin + value for value in span["block"]]
+        deletions.append(
+            [
+                token
+                for token, (left, right) in zip(ids, offsets)
+                if not (right > left and right > start and left < end)
+            ]
+        )
+    return ids, deletions
+
+
+def reader_input_trace(tokenizer, row, indices, input_cap, system=SYSTEM):
+    indices = sorted(indices)
+    if (
+        input_cap < 1
+        or len(set(indices)) != len(indices)
+        or any(index < 0 or index >= len(row["ctxs"]) for index in indices)
+    ):
+        raise ValueError("Invalid reader input cap or passage indices")
+    prompt, spans = qa_prompt_with_spans(row, indices)
+    ids, offsets, origin = rendered_token_offsets(tokenizer, prompt, system)
     passages = []
     for span in spans:
         item = {"index": span["index"], "id": str(row["ctxs"][span["index"]]["id"])}

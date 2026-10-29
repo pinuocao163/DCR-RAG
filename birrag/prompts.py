@@ -16,6 +16,7 @@ def qa_prompt_with_spans(row, indices=None):
         spans.append(
             {
                 "index": index,
+                "block": (offset, offset + len(block) + 2),
                 "title": (title_start, title_start + len(title)),
                 "text": (text_start, text_start + len(text)),
             }
